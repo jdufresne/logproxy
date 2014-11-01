@@ -27,11 +27,13 @@ def read_socket(sock):
     timeout = sock.gettimeout()
     sock.settimeout(1.0)
 
-    data = b''
+    data = bytearray()
     try:
         while True:
             buf = sock.recv(BUF_LEN)
-            data += buf
+            if not buf:
+                break
+            data.extend(buf)
     except socket.timeout:
         # Done.
         pass
@@ -49,8 +51,10 @@ def get_port(parsed):
 
 
 class ProxyHandler(socketserver.BaseRequestHandler):
+    BUF_LEN = 4096
+
     def handle(self):
-        data = read_socket(self.request)
+        data = self.read_request(self.request)
         lines = data.splitlines(True)
         for line in lines:
             sys.stdout.buffer.write(b'> ')
@@ -86,8 +90,20 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
         self.request.sendall(data)
 
+    def read_request(self, sock):
+        data = bytearray()
+        while not data.endswith(b'\r\n\r\n'):
+            data.extend(sock.recv(self.BUF_LEN))
+        return bytes(data)
+
 
 if __name__ == '__main__':
     HOST, PORT = '', 8888
     server = socketserver.TCPServer((HOST, PORT), ProxyHandler)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        sys.stdout.write('\nCtrl-C detected\n')
+    finally:
+        sys.stdout.write('Shutting down\n')
+        server.close()
