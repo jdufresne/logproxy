@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+
+import socket
+import socketserver
+import sys
+import urllib.parse
+
+
+def read_socket(sock):
+    BUF_LEN = 4096
+
+    timeout = sock.gettimeout()
+    sock.settimeout(1.0)
+
+    data = b''
+    try:
+        while True:
+            buf = sock.recv(BUF_LEN)
+            data += buf
+    except socket.timeout:
+        # Done.
+        pass
+
+    sock.settimeout(timeout)
+    return data
+
+
+def get_port(parsed):
+    PORTS = {
+        'http': 80,
+        'https': 443,
+    }
+    return parsed.port or PORTS[parsed.scheme]
+
+
+class ProxyHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        data = read_socket(self.request)
+        lines = data.splitlines(True)
+        for line in lines:
+            sys.stdout.buffer.write(b'> ')
+            sys.stdout.buffer.write(line.strip())
+            sys.stdout.buffer.write(b'\n')
+            if line == b'\r\n':
+                break
+        sys.stdout.flush()
+
+        method, url, version = lines[0].decode('ascii').split()
+        parsed = urllib.parse.urlsplit(url)
+
+        # Rebuild URL without host
+        url = urllib.parse.urlunsplit(
+            ('', '', parsed.path, parsed.query, parsed.fragment))
+        line = '%s %s %s\r\n' % (method, url, version)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((parsed.hostname, get_port(parsed)))
+            sock.setblocking(False)
+            sock.send(line.encode('ascii'))
+            sock.send(b''.join(lines[1:]))
+            data = read_socket(sock)
+
+        for line in data.splitlines(True):
+            sys.stdout.buffer.write(b'< ')
+            sys.stdout.buffer.write(line.strip())
+            sys.stdout.buffer.write(b'\n')
+            if line == b'\r\n':
+                break
+        sys.stdout.buffer.write(b'\n')
+        sys.stdout.flush()
+
+        self.request.sendall(data)
+
+
+if __name__ == '__main__':
+    HOST, PORT = '', 8888
+    server = socketserver.TCPServer((HOST, PORT), ProxyHandler)
+    server.serve_forever()
