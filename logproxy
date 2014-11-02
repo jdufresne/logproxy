@@ -100,10 +100,25 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
     def read_request(self, sock):
         data = bytearray()
-        with timeout(sock):
-            while not data.endswith(b'\r\n\r\n'):
-                data.extend(sock.recv(self.CHUNK_SIZE))
+        while not self.read_request_finished(data):
+            data.extend(sock.recv(self.CHUNK_SIZE))
         return bytes(data)
+
+    def read_request_finished(self, data):
+        headers_finished = False
+        content_length = 0
+        content_pos = 0
+        for line in data.splitlines(True):
+            content_pos += len(line)
+            if line == b'\r\n':
+                headers_finished = True
+                break
+            header = line.split(b':', 1)
+            if len(header) == 2:
+                field, value = header
+                if field.strip().lower() == b'content-length':
+                    content_length = int(value.strip())
+        return headers_finished and len(data[content_pos:]) == content_length
 
 
 if __name__ == '__main__':
