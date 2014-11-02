@@ -15,39 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
 
-import contextlib
 import socket
 import socketserver
 import sys
 import urllib.parse
-
-
-@contextlib.contextmanager
-def timeout(sock):
-    timeout = sock.gettimeout()
-    sock.settimeout(1.0)
-
-    try:
-        yield
-    except socket.timeout:
-        # Done.
-        print("timed out")
-        pass
-    finally:
-        sock.settimeout(timeout)
-
-
-def read_socket(sock):
-    CHUNK_SIZE = 4096
-
-    data = bytearray()
-    with timeout(sock):
-        while True:
-            buf = sock.recv(CHUNK_SIZE)
-            if not buf:
-                break
-            data.extend(buf)
-    return data
 
 
 def get_port(parsed):
@@ -62,7 +33,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
     CHUNK_SIZE = 4096
 
     def handle(self):
-        data = self.read_request(self.request)
+        data = self.read(self.request)
         lines = data.splitlines(True)
         for line in lines:
             sys.stdout.buffer.write(b'> ')
@@ -82,10 +53,9 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((parsed.hostname, get_port(parsed)))
-            sock.setblocking(False)
             sock.send(line.encode('ascii'))
             sock.send(b''.join(lines[1:]))
-            data = read_socket(sock)
+            data = self.read(sock)
 
         for line in data.splitlines(True):
             sys.stdout.buffer.write(b'< ')
@@ -98,27 +68,58 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
         self.request.sendall(data)
 
-    def read_request(self, sock):
+    def read(self, sock):
         data = bytearray()
-        while not self.read_request_finished(data):
+        while not self.read_finished(data):
             data.extend(sock.recv(self.CHUNK_SIZE))
         return bytes(data)
 
-    def read_request_finished(self, data):
+    def read_finished(self, data):
         headers_finished = False
+        chunked = False
         content_length = 0
-        content_pos = 0
+        pos = 0
         for line in data.splitlines(True):
-            content_pos += len(line)
+            pos += len(line)
             if line == b'\r\n':
                 headers_finished = True
                 break
             header = line.split(b':', 1)
             if len(header) == 2:
                 field, value = header
-                if field.strip().lower() == b'content-length':
+                field = field.strip().lower()
+                value = value.strip()
+                if field == b'content-length':
                     content_length = int(value.strip())
-        return headers_finished and len(data[content_pos:]) == content_length
+                elif field == b'transfer-encoding':
+                    chunked = value == b'chunked'
+
+        if not headers_finished:
+            return False
+
+        if chunked:
+            chunk_finished = False
+            chunk_start = None
+            chunk_length = None
+            for line in data[pos:].splitlines(True):
+                pos += len(line)
+                if chunk_length == 0 and line == b'\r\n':
+                    chunk_finished = True
+                if chunk_length is None:
+                    chunk_length = int(line.strip(), 16)
+                    chunk_start = pos
+                elif (pos - chunk_start - len(b'\r\n') == chunk_length and
+                      line.endswith(b'\r\n')):
+                    chunk_length = None
+            finished = chunk_finished
+        else:
+            finished = len(data[pos:]) == content_length
+        return finished
+
+
+
+
+
 
 
 if __name__ == '__main__':
